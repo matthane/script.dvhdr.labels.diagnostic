@@ -8,6 +8,11 @@ Label semantics are documented in xbmc/guilib/guiinfo/CEGUIInfoLabels.dox;
 absence is signalled by emptiness (shown here as "-"), which also covers a
 build without the feature.
 
+2.2.0 adds the trim block: targets enumerated live from the l2.trims /
+l8.trims presence labels, then every control queried per target through the
+parameterized trim labels (raw codes plus the .ui row). Spacing is condensed
+to fit; density beats aesthetics in a diagnostic overlay.
+
 Read-only test tooling: no network, no settings, no filesystem writes.
 """
 
@@ -20,7 +25,7 @@ import xbmc
 import xbmcgui
 
 ADDON_ID = "script.dvhdr.labels.diagnostic"
-ADDON_VERSION = "2.1.0"  # keep in sync with addon.xml
+ADDON_VERSION = "2.2.0"  # keep in sync with addon.xml
 LOG_PREFIX = "[script.dvhdr.labels.diagnostic] "
 
 # running flag on the home window: every ExecuteAddon spawns a fresh Python
@@ -59,6 +64,7 @@ SECTIONS = (
         ("Player.Process(video.dovi.l1.max.nits)", "dovi.l1.max.nits"),
         ("Player.Process(video.dovi.l1.avg.pq)", "dovi.l1.avg.pq"),
         ("Player.Process(video.dovi.l1.avg.nits)", "dovi.l1.avg.nits"),
+        ("Player.Process(video.dovi.l3.mid)", "dovi.l3.mid"),
     )),
     ("DV L5 offsets (per-frame)  +  L6 / HDR10 (static)", (
         ("Player.Process(video.dovi.l5.left.offset)", "dovi.l5.left.offset"),
@@ -73,10 +79,55 @@ SECTIONS = (
         ("Player.Process(video.hdr.max.fall)", "hdr.max.fall"),
         ("Player.Process(video.hdr.min.lum)", "hdr.min.lum"),
         ("Player.Process(video.hdr.max.lum)", "hdr.max.lum"),
+        ("Player.Process(video.dovi.l9.primaries)", "dovi.l9.primaries"),
+        ("Player.Process(video.dovi.l11.type)", "dovi.l11.type"),
+        ("Player.Process(video.dovi.l11.whitepoint)", "dovi.l11.whitepoint"),
+        ("Player.Process(video.dovi.l11.refmode)", "dovi.l11.refmode"),
     )),
 )
 
 ROWS_PER_SECTION = max(len(rows) for _, rows in SECTIONS)
+
+# ---------------------------------------------------------------- trim block
+# Targets come live from the l2.trims / l8.trims presence labels; every
+# control is then queried per target through the parameterized labels. One
+# raw row and one .ui row per target, condensed short keys.
+TRIM_SECTIONS = (("L2 trims (per-frame)", "l2"), ("L8 trims (per-frame)", "l8"))
+TRIM_RAW_CONTROLS = (("s", "slope"), ("o", "offset"), ("p", "power"),
+                     ("cw", "chromaweight"), ("sg", "saturation"),
+                     ("td", "tonedetail"))
+TRIM_RAW_CONTROLS_L8 = TRIM_RAW_CONTROLS + (("mc", "midcontrastbias"),
+                                            ("hc", "highlightclipping"))
+TRIM_UI_CONTROLS = (("g", "gain"), ("l", "lift"), ("gm", "gamma"),
+                    ("cw", "chromaweight"), ("sg", "saturation"),
+                    ("td", "tonedetail"))
+# row budget per level: presence row + 2 rows per shown target, more targets
+# collapse into a "+N more" tail row
+TRIM_MAX_TARGETS = 4
+TRIM_DETAIL_ROWS = TRIM_MAX_TARGETS * 2
+TRIM_ROWS_TOTAL = 1 + TRIM_DETAIL_ROWS + 1
+
+
+def trim_rows(level):
+    """Composed display rows for one level: (slot key, text) pairs."""
+    targets = read("Player.Process(video.dovi.%s.trims)" % level).split()
+    rows = [("%s.trims" % level, "targets: %s" % (" ".join(targets) or "-"))]
+    shown = targets[:TRIM_MAX_TARGETS]
+    controls = TRIM_RAW_CONTROLS_L8 if level == "l8" else TRIM_RAW_CONTROLS
+    for target in shown:
+        raw = ["%s%s" % (key, read(
+            "Player.Process(video.dovi.%s.trim.%s.%s)" % (level, target, name))
+            or "-") for key, name in controls]
+        ui = ["%s%s" % (key, read(
+            "Player.Process(video.dovi.%s.trim.%s.%s.ui)" % (level, target, name))
+            or "-") for key, name in TRIM_UI_CONTROLS]
+        rows.append(("%s.%s.raw" % (level, target),
+                     "%s  %s" % (target, " ".join(raw))))
+        rows.append(("%s.%s.ui" % (level, target), "     ui  %s" % " ".join(ui)))
+    if len(targets) > len(shown):
+        rows.append(("%s.more" % level, "+%d more targets"
+                     % (len(targets) - len(shown))))
+    return rows
 
 # action ids from xbmc/input/actions/ActionIDs.h
 ACT_PREVIOUS_MENU = 10
@@ -159,7 +210,8 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
         except Exception:
             width, height = 1280, 720  # pre-Estuary skin coordinate fallback
 
-        line_h = max(18, int(height / 24.0))
+        # condensed since 2.2.0: the trim block nearly doubles the row count
+        line_h = max(14, int(height / 40.0))
         mx, my = int(width * 0.03), int(height * 0.04)
         pad = int(width * 0.015)
         gap = int(width * 0.02)
@@ -171,7 +223,8 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
         # size the panel to the content: it sits on top of the video the
         # user is trying to look at
         ph = (int(line_h * 0.35) + title_block + section_block
-              + ROWS_PER_SECTION * line_h + footer_block)
+              + ROWS_PER_SECTION * line_h + int(line_h * 0.4) + section_block
+              + TRIM_ROWS_TOTAL * line_h + footer_block)
 
         col_w = (pw - 2 * pad - gap) // 2
         name_w = int(col_w * 0.62)
@@ -211,6 +264,25 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
                                   else None))
                 controls.extend((name, value))
 
+        # trim block: two columns of composed full-width rows, filled
+        # dynamically from the presence labels each refresh
+        trim_y = rows_y + ROWS_PER_SECTION * line_h + int(line_h * 0.4)
+        self.trim_labels = []
+        for index, (trim_title, _) in enumerate(TRIM_SECTIONS):
+            cx = mx + pad + index * (col_w + gap)
+            controls.append(xbmcgui.ControlLabel(
+                cx, trim_y, col_w, line_h, trim_title, font="font12",
+                textColor="FFFFD060"))
+            column = []
+            for row in range(TRIM_ROWS_TOTAL):
+                y = trim_y + section_block + row * line_h
+                label = xbmcgui.ControlLabel(cx, y, col_w, line_h, "",
+                                             font="font12",
+                                             textColor="FFFFFFFF")
+                column.append(label)
+                controls.append(label)
+            self.trim_labels.append(column)
+
         self.footer = xbmcgui.ControlLabel(
             mx + pad, my + ph - int(line_h * 1.3), pw - 2 * pad, line_h,
             "Back or re-run add-on: close   |   all other keys act on the video",
@@ -242,6 +314,21 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
             self.previous[expression] = value
             name_ctl.setLabel(shown_name)
             value_ctl.setLabel(shown)
+
+        for (_, level), column in zip(TRIM_SECTIONS, self.trim_labels):
+            composed = trim_rows(level)
+            for slot, label in enumerate(column):
+                if slot >= len(composed):
+                    label.setLabel("")
+                    continue
+                key, text = composed[slot]
+                shown = text
+                if self.previous.get(key, text) != text:
+                    self.changed_at[key] = now
+                if now - self.changed_at.get(key, -HIGHLIGHT_SECS) < HIGHLIGHT_SECS:
+                    shown = "[COLOR FF60FF60]%s[/COLOR]" % shown
+                self.previous[key] = text
+                label.setLabel(shown)
 
     # ----------------------------------------------------------------- input
     def onAction(self, action):
