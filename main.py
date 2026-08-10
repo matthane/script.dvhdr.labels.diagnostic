@@ -13,6 +13,10 @@ l8.trims presence labels, then every control queried per target through the
 parameterized trim labels (raw codes plus the .ui row). Spacing is condensed
 to fit; density beats aesthetics in a diagnostic overlay.
 
+2.3.0 adds level/version/rpu.present/bl.present/el.present/vdr.bitdepth and
+video.bitdepth rows, rebalances the two sections, and tightens line height
+and panel contrast so the wider table still fits 1280x720.
+
 Read-only test tooling: no network, no settings, no filesystem writes.
 """
 
@@ -25,7 +29,7 @@ import xbmc
 import xbmcgui
 
 ADDON_ID = "script.dvhdr.labels.diagnostic"
-ADDON_VERSION = "2.2.0"  # keep in sync with addon.xml
+ADDON_VERSION = "2.3.0"  # keep in sync with addon.xml
 LOG_PREFIX = "[script.dvhdr.labels.diagnostic] "
 
 # running flag on the home window: every ExecuteAddon spawns a fresh Python
@@ -44,29 +48,36 @@ HIGHLIGHT_SECS = 0.6
 # ------------------------------------------------------------ label sections
 # rows are (infolabel expression, short name shown on screen)
 SECTIONS = (
-    ("DV identity (static)  +  source / L1 nits (per-frame)", (
+    ("DV identity (static)  +  L1 nits (per-frame)", (
         ("VideoPlayer.HdrType", "HdrType"),
         ("VideoPlayer.HdrDetail", "HdrDetail"),
         ("Player.Process(video.dovi.apiversion)", "dovi.apiversion"),
         ("Player.Process(video.dovi.profile)", "dovi.profile"),
+        ("Player.Process(video.dovi.level)", "dovi.level"),
+        ("Player.Process(video.dovi.version)", "dovi.version"),
         ("Player.Process(video.dovi.el.type)", "dovi.el.type"),
+        ("Player.Process(video.dovi.rpu.present)", "dovi.rpu.present"),
+        ("Player.Process(video.dovi.bl.present)", "dovi.bl.present"),
+        ("Player.Process(video.dovi.el.present)", "dovi.el.present"),
         ("Player.Process(video.dovi.meta.version)", "dovi.meta.version"),
         ("Player.Process(video.dovi.flags)", "dovi.flags"),
-        # source min/max are zeroed by the bitstream on compressed frames,
-        # in which case they render empty
-        ("Player.Process(video.dovi.source.min.pq)", "dovi.source.min.pq"),
-        ("Player.Process(video.dovi.source.min.nits)", "dovi.source.min.nits"),
-        ("Player.Process(video.dovi.source.max.pq)", "dovi.source.max.pq"),
-        ("Player.Process(video.dovi.source.max.nits)", "dovi.source.max.nits"),
+        ("Player.Process(video.dovi.vdr.bitdepth)", "dovi.vdr.bitdepth"),
+        ("Player.Process(video.bitdepth)", "video.bitdepth"),
         ("Player.Process(video.dovi.l1.min.pq)", "dovi.l1.min.pq"),
         ("Player.Process(video.dovi.l1.min.nits)", "dovi.l1.min.nits"),
         ("Player.Process(video.dovi.l1.max.pq)", "dovi.l1.max.pq"),
         ("Player.Process(video.dovi.l1.max.nits)", "dovi.l1.max.nits"),
         ("Player.Process(video.dovi.l1.avg.pq)", "dovi.l1.avg.pq"),
         ("Player.Process(video.dovi.l1.avg.nits)", "dovi.l1.avg.nits"),
-        ("Player.Process(video.dovi.l3.mid)", "dovi.l3.mid"),
     )),
-    ("DV L5 offsets (per-frame)  +  L6 / HDR10 (static)", (
+    ("DV source / L3 / L5 (per-frame)  +  L6 / HDR10 / L9 / L11 (static)", (
+        # source min/max are zeroed by the bitstream on compressed frames,
+        # in which case they render empty
+        ("Player.Process(video.dovi.source.min.pq)", "dovi.source.min.pq"),
+        ("Player.Process(video.dovi.source.min.nits)", "dovi.source.min.nits"),
+        ("Player.Process(video.dovi.source.max.pq)", "dovi.source.max.pq"),
+        ("Player.Process(video.dovi.source.max.nits)", "dovi.source.max.nits"),
+        ("Player.Process(video.dovi.l3.mid)", "dovi.l3.mid"),
         ("Player.Process(video.dovi.l5.left.offset)", "dovi.l5.left.offset"),
         ("Player.Process(video.dovi.l5.right.offset)", "dovi.l5.right.offset"),
         ("Player.Process(video.dovi.l5.top.offset)", "dovi.l5.top.offset"),
@@ -211,7 +222,7 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
             width, height = 1280, 720  # pre-Estuary skin coordinate fallback
 
         # condensed since 2.2.0: the trim block nearly doubles the row count
-        line_h = max(14, int(height / 40.0))
+        line_h = max(14, int(height / 42.0))
         mx, my = int(width * 0.03), int(height * 0.04)
         pad = int(width * 0.015)
         gap = int(width * 0.02)
@@ -236,7 +247,7 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
         controls = []
         try:
             controls.append(xbmcgui.ControlImage(mx, my, pw, ph, BG_IMAGE,
-                                                 colorDiffuse="D0000000"))
+                                                 colorDiffuse="E4000000"))
         except Exception as exc:  # cosmetic; labels still work
             log("panel image unavailable: %s" % exc, xbmc.LOGWARNING)
 
@@ -254,7 +265,7 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
                 y = rows_y + row * line_h
                 name = xbmcgui.ControlLabel(cx, y, name_w, line_h, "",
                                             font="font12",
-                                            textColor="FFA8B4C0")
+                                            textColor="FFE0E8F0")
                 value = xbmcgui.ControlLabel(cx + name_w, y, val_w, line_h, "",
                                              font="font13",
                                              textColor="FFFFFFFF")
