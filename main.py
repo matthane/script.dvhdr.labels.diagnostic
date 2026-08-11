@@ -1,12 +1,12 @@
 # -*- coding: utf-8 -*-
 """
 script.dvhdr.labels.diagnostic -- on-screen overlay for verifying the Dolby
-Vision and HDR infolabels registered by the CoreELEC label registry
-(branch ce-label-registry).
+Vision and HDR metadata Kodi core publishes via
+Player.Process(video.sidedata), parsed by script.module.sidedata.
 
-Label semantics are documented in xbmc/guilib/guiinfo/CEGUIInfoLabels.dox;
-absence is signalled by emptiness (shown here as "-"), which also covers a
-build without the feature.
+Result shape and field semantics are documented in that module's README and
+lib/sidedata/__init__.py; absence is signalled by emptiness (shown here as
+"-"), which also covers a build without the feature.
 
 2.2.0 adds the trim block: targets enumerated live from the l2.trims /
 l8.trims presence labels, then every control queried per target through the
@@ -29,6 +29,20 @@ font10 and fitting 1280x720 and 1920x1080.
 spare row budget), since it lists L10 display definitions rather than
 trim targets.
 
+3.0.0 reworks the label source: Kodi core dropped the ~60 parsed
+video.dovi.*/video.hdr.*/video.hdr10plus.* infolabels and now exposes only
+Player.Process(video.sidedata), a JSON object of base64 raw payloads.
+script.module.sidedata parses it; row values come from that parsed result
+via compute_row_values()/trim_rows()/hdr10plus_rows(), pure functions that
+take the parsed dict and never touch xbmc, so they're host-testable.
+parse_sidedata() only re-runs when the raw sidedata string changes between
+polls. video.bitdepth is dropped (no longer available); the old
+video.dovi.apiversion row is now a module row showing the sidedata module's
+own addon version -- "missing" if the module import failed, in which case
+every parsed row falls back to "-" instead of taking the script down.
+VideoPlayer.HdrType and VideoPlayer.HdrDetail are still read directly, as
+before. Screen layout is unchanged from 2.4.0.
+
 Read-only test tooling: no network, no settings, no filesystem writes.
 """
 
@@ -38,10 +52,29 @@ import time
 import traceback
 
 import xbmc
+import xbmcaddon
 import xbmcgui
 
+try:
+    from sidedata import parse_sidedata as _parse_sidedata
+    SIDEDATA_IMPORT_ERROR = None
+except Exception as exc:  # never let a missing/broken module install kill the script
+    _parse_sidedata = None
+    SIDEDATA_IMPORT_ERROR = exc
+
+_EMPTY_SIDEDATA = {'flags': [], 'config': None, 'rpu': None,
+                   'hdr10plus': None, 'mdcv': None, 'cll': None}
+
+
+def parse_sidedata(json_str):
+    if _parse_sidedata is None:
+        return _EMPTY_SIDEDATA
+    return _parse_sidedata(json_str)
+
+
 ADDON_ID = "script.dvhdr.labels.diagnostic"
-ADDON_VERSION = "2.4.0"  # keep in sync with addon.xml
+ADDON_VERSION = "3.0.0"  # keep in sync with addon.xml
+SIDEDATA_MODULE_ID = "script.module.sidedata"
 LOG_PREFIX = "[script.dvhdr.labels.diagnostic] "
 
 # running flag on the home window: every ExecuteAddon spawns a fresh Python
@@ -58,63 +91,199 @@ POLL_INTERVAL = 0.05
 HIGHLIGHT_SECS = 0.6
 
 # ------------------------------------------------------------ label sections
-# rows are (infolabel expression, short name shown on screen)
+# rows are (key, short name shown on screen). keys starting with
+# "VideoPlayer." are read directly as infolabel expressions; every other key
+# is looked up in the dict compute_row_values() returns each refresh
 SECTIONS = (
     ("DV identity (static)  +  L1 nits (per-frame)", (
         ("VideoPlayer.HdrType", "HdrType"),
         ("VideoPlayer.HdrDetail", "HdrDetail"),
-        ("Player.Process(video.dovi.apiversion)", "dovi.apiversion"),
-        ("Player.Process(video.dovi.profile)", "dovi.profile"),
-        ("Player.Process(video.dovi.level)", "dovi.level"),
-        ("Player.Process(video.dovi.version)", "dovi.version"),
-        ("Player.Process(video.dovi.el.type)", "dovi.el.type"),
-        ("Player.Process(video.dovi.rpu.present)", "dovi.rpu.present"),
-        ("Player.Process(video.dovi.bl.present)", "dovi.bl.present"),
-        ("Player.Process(video.dovi.el.present)", "dovi.el.present"),
-        ("Player.Process(video.dovi.meta.version)", "dovi.meta.version"),
-        ("Player.Process(video.dovi.flags)", "dovi.flags"),
-        ("Player.Process(video.dovi.vdr.bitdepth)", "dovi.vdr.bitdepth"),
-        ("Player.Process(video.bitdepth)", "video.bitdepth"),
-        ("Player.Process(video.dovi.l1.min.pq)", "dovi.l1.min.pq"),
-        ("Player.Process(video.dovi.l1.min.nits)", "dovi.l1.min.nits"),
-        ("Player.Process(video.dovi.l1.max.pq)", "dovi.l1.max.pq"),
-        ("Player.Process(video.dovi.l1.max.nits)", "dovi.l1.max.nits"),
-        ("Player.Process(video.dovi.l1.avg.pq)", "dovi.l1.avg.pq"),
-        ("Player.Process(video.dovi.l1.avg.nits)", "dovi.l1.avg.nits"),
+        ("module.version", "module.version"),
+        ("dovi.profile", "dovi.profile"),
+        ("dovi.level", "dovi.level"),
+        ("dovi.version", "dovi.version"),
+        ("dovi.el.type", "dovi.el.type"),
+        ("dovi.rpu.present", "dovi.rpu.present"),
+        ("dovi.bl.present", "dovi.bl.present"),
+        ("dovi.el.present", "dovi.el.present"),
+        ("dovi.meta.version", "dovi.meta.version"),
+        ("dovi.flags", "dovi.flags"),
+        ("dovi.vdr.bitdepth", "dovi.vdr.bitdepth"),
+        ("dovi.l1.min.pq", "dovi.l1.min.pq"),
+        ("dovi.l1.min.nits", "dovi.l1.min.nits"),
+        ("dovi.l1.max.pq", "dovi.l1.max.pq"),
+        ("dovi.l1.max.nits", "dovi.l1.max.nits"),
+        ("dovi.l1.avg.pq", "dovi.l1.avg.pq"),
+        ("dovi.l1.avg.nits", "dovi.l1.avg.nits"),
     )),
     ("DV source / L3 / L5 (per-frame)  +  L6 / HDR10 / L9 / L11 (static)", (
         # source min/max are zeroed by the bitstream on compressed frames,
         # in which case they render empty
-        ("Player.Process(video.dovi.source.min.pq)", "dovi.source.min.pq"),
-        ("Player.Process(video.dovi.source.min.nits)", "dovi.source.min.nits"),
-        ("Player.Process(video.dovi.source.max.pq)", "dovi.source.max.pq"),
-        ("Player.Process(video.dovi.source.max.nits)", "dovi.source.max.nits"),
-        ("Player.Process(video.dovi.l3.mid)", "dovi.l3.mid"),
-        ("Player.Process(video.dovi.l5.left.offset)", "dovi.l5.left.offset"),
-        ("Player.Process(video.dovi.l5.right.offset)", "dovi.l5.right.offset"),
-        ("Player.Process(video.dovi.l5.top.offset)", "dovi.l5.top.offset"),
-        ("Player.Process(video.dovi.l5.bottom.offset)", "dovi.l5.bottom.offset"),
-        ("Player.Process(video.dovi.l6.max.cll)", "dovi.l6.max.cll"),
-        ("Player.Process(video.dovi.l6.max.fall)", "dovi.l6.max.fall"),
-        ("Player.Process(video.dovi.l6.min.lum)", "dovi.l6.min.lum"),
-        ("Player.Process(video.dovi.l6.max.lum)", "dovi.l6.max.lum"),
-        ("Player.Process(video.hdr.max.cll)", "hdr.max.cll"),
-        ("Player.Process(video.hdr.max.fall)", "hdr.max.fall"),
-        ("Player.Process(video.hdr.min.lum)", "hdr.min.lum"),
-        ("Player.Process(video.hdr.max.lum)", "hdr.max.lum"),
-        ("Player.Process(video.dovi.l9.primaries)", "dovi.l9.primaries"),
-        ("Player.Process(video.dovi.l11.type)", "dovi.l11.type"),
-        ("Player.Process(video.dovi.l11.whitepoint)", "dovi.l11.whitepoint"),
-        ("Player.Process(video.dovi.l11.refmode)", "dovi.l11.refmode"),
+        ("dovi.source.min.pq", "dovi.source.min.pq"),
+        ("dovi.source.min.nits", "dovi.source.min.nits"),
+        ("dovi.source.max.pq", "dovi.source.max.pq"),
+        ("dovi.source.max.nits", "dovi.source.max.nits"),
+        ("dovi.l3.mid", "dovi.l3.mid"),
+        ("dovi.l5.left.offset", "dovi.l5.left.offset"),
+        ("dovi.l5.right.offset", "dovi.l5.right.offset"),
+        ("dovi.l5.top.offset", "dovi.l5.top.offset"),
+        ("dovi.l5.bottom.offset", "dovi.l5.bottom.offset"),
+        ("dovi.l6.max.cll", "dovi.l6.max.cll"),
+        ("dovi.l6.max.fall", "dovi.l6.max.fall"),
+        ("dovi.l6.min.lum", "dovi.l6.min.lum"),
+        ("dovi.l6.max.lum", "dovi.l6.max.lum"),
+        ("hdr.max.cll", "hdr.max.cll"),
+        ("hdr.max.fall", "hdr.max.fall"),
+        ("hdr.min.lum", "hdr.min.lum"),
+        ("hdr.max.lum", "hdr.max.lum"),
+        ("dovi.l9.primaries", "dovi.l9.primaries"),
+        ("dovi.l11.type", "dovi.l11.type"),
+        ("dovi.l11.whitepoint", "dovi.l11.whitepoint"),
+        ("dovi.l11.refmode", "dovi.l11.refmode"),
     )),
 )
 
 ROWS_PER_SECTION = max(len(rows) for _, rows in SECTIONS)
 
+
+# ---------------------------------------------------------- value rendering
+# pure functions: parsed sidedata dict -> row strings. No xbmc calls, so
+# these are host-testable directly.
+
+def fmt_number(value):
+    """Mirrors the reference AMLFormatMetadataNumber: four decimals below 1,
+    whole numbers at or above 1, no unit suffix."""
+    if value != 0 and abs(value) < 1.0:
+        return "%.4f" % value
+    return str(int(round(value)))
+
+
+def _bool01(value):
+    return "1" if value else "0"
+
+
+def compute_row_values(parsed, module_version):
+    """parsed is a sidedata.parse_sidedata() result. Returns a dict keyed by
+    the same short names used in SECTIONS (minus the VideoPlayer.* rows,
+    which are read live)."""
+    rpu = parsed.get('rpu')
+    config = parsed.get('config')
+    mdcv = parsed.get('mdcv')
+    cll = parsed.get('cll')
+    values = {'module.version': module_version or ""}
+
+    header = rpu['header'] if rpu else None
+
+    profile = rpu['profile'] if rpu else None
+    if profile is None:
+        values['dovi.profile'] = ""
+    elif config and config.get('compat_id') is not None:
+        values['dovi.profile'] = "%d.%d" % (profile, config['compat_id'])
+    else:
+        values['dovi.profile'] = str(profile)
+    values['dovi.el.type'] = header['el_type'] if header and header['el_type'] else ""
+
+    if config:
+        values['dovi.level'] = str(config['level']) if config['level'] > 0 else ""
+        values['dovi.version'] = "%d.%d" % (config['version_major'], config['version_minor'])
+        values['dovi.rpu.present'] = _bool01(config['rpu_present'])
+        values['dovi.bl.present'] = _bool01(config['bl_present'])
+        values['dovi.el.present'] = _bool01(config['el_present'])
+    else:
+        values['dovi.level'] = ""
+        values['dovi.version'] = ""
+        values['dovi.rpu.present'] = ""
+        values['dovi.bl.present'] = ""
+        values['dovi.el.present'] = ""
+
+    values['dovi.meta.version'] = rpu['cm_version'] if rpu and rpu['cm_version'] else ""
+    values['dovi.flags'] = " ".join(parsed.get('flags') or [])
+
+    vdr_bit_depth = header['vdr_bit_depth'] if header else None
+    values['dovi.vdr.bitdepth'] = str(vdr_bit_depth) if vdr_bit_depth is not None else ""
+
+    l1 = rpu['l1'] if rpu else None
+    if l1:
+        values['dovi.l1.min.pq'] = str(l1['min_pq'])
+        values['dovi.l1.min.nits'] = fmt_number(l1['min_nits'])
+        values['dovi.l1.max.pq'] = str(l1['max_pq'])
+        values['dovi.l1.max.nits'] = fmt_number(l1['max_nits'])
+        values['dovi.l1.avg.pq'] = str(l1['avg_pq'])
+        values['dovi.l1.avg.nits'] = fmt_number(l1['avg_nits'])
+    else:
+        for key in ('dovi.l1.min.pq', 'dovi.l1.min.nits', 'dovi.l1.max.pq',
+                    'dovi.l1.max.nits', 'dovi.l1.avg.pq', 'dovi.l1.avg.nits'):
+            values[key] = ""
+
+    source = rpu['source'] if rpu else None
+    if source:
+        values['dovi.source.min.pq'] = str(source['min_pq'])
+        values['dovi.source.min.nits'] = fmt_number(source['min_nits'])
+        values['dovi.source.max.pq'] = str(source['max_pq'])
+        values['dovi.source.max.nits'] = fmt_number(source['max_nits'])
+    else:
+        for key in ('dovi.source.min.pq', 'dovi.source.min.nits',
+                    'dovi.source.max.pq', 'dovi.source.max.nits'):
+            values[key] = ""
+
+    l3 = rpu['l3'] if rpu else None
+    values['dovi.l3.mid'] = str(l3['avg_pq_offset']) if l3 else ""
+
+    l5 = rpu['l5'] if rpu else None
+    if l5:
+        values['dovi.l5.left.offset'] = str(l5['left'])
+        values['dovi.l5.right.offset'] = str(l5['right'])
+        values['dovi.l5.top.offset'] = str(l5['top'])
+        values['dovi.l5.bottom.offset'] = str(l5['bottom'])
+    else:
+        for key in ('dovi.l5.left.offset', 'dovi.l5.right.offset',
+                    'dovi.l5.top.offset', 'dovi.l5.bottom.offset'):
+            values[key] = ""
+
+    l6 = rpu['l6'] if rpu else None
+    if l6:
+        values['dovi.l6.max.cll'] = str(l6['max_cll'])
+        values['dovi.l6.max.fall'] = str(l6['max_fall'])
+        values['dovi.l6.min.lum'] = fmt_number(l6['min_lum_nits'])
+        values['dovi.l6.max.lum'] = fmt_number(l6['max_lum_nits'])
+    else:
+        for key in ('dovi.l6.max.cll', 'dovi.l6.max.fall',
+                    'dovi.l6.min.lum', 'dovi.l6.max.lum'):
+            values[key] = ""
+
+    if cll:
+        values['hdr.max.cll'] = str(cll['max_cll'])
+        values['hdr.max.fall'] = str(cll['max_fall'])
+    else:
+        values['hdr.max.cll'] = ""
+        values['hdr.max.fall'] = ""
+
+    if mdcv:
+        values['hdr.min.lum'] = fmt_number(mdcv['min_luminance'])
+        values['hdr.max.lum'] = fmt_number(mdcv['max_luminance'])
+    else:
+        values['hdr.min.lum'] = ""
+        values['hdr.max.lum'] = ""
+
+    l9 = rpu['l9'] if rpu else None
+    values['dovi.l9.primaries'] = l9['name'] if l9 else ""
+
+    l11 = rpu['l11'] if rpu else None
+    if l11:
+        values['dovi.l11.type'] = l11['content_type_name']
+        values['dovi.l11.whitepoint'] = l11['whitepoint_name']
+        values['dovi.l11.refmode'] = _bool01(l11['reference_mode'])
+    else:
+        values['dovi.l11.type'] = ""
+        values['dovi.l11.whitepoint'] = ""
+        values['dovi.l11.refmode'] = ""
+
+    return values
+
 # ---------------------------------------------------------------- trim block
-# Targets come live from the l2.trims / l8.trims presence labels; every
-# control is then queried per target through the parameterized labels. One
-# raw row and one .ui row per target, condensed short keys.
+# Targets come from rpu['l2']/rpu['l8'], each already resolved to nits and
+# carrying its raw codes plus the inverted 'ui' scale. One raw row and one
+# .ui row per target, condensed short keys.
 TRIM_SECTIONS = (("L2 trims (per-frame)", "l2"), ("L8 trims (per-frame)", "l8"))
 TRIM_RAW_CONTROLS = (("s", "slope"), ("o", "offset"), ("p", "power"),
                      ("cw", "chromaweight"), ("sg", "saturation"),
@@ -124,6 +293,9 @@ TRIM_RAW_CONTROLS_L8 = TRIM_RAW_CONTROLS + (("mc", "midcontrastbias"),
 TRIM_UI_CONTROLS = (("g", "gain"), ("l", "lift"), ("gm", "gamma"),
                     ("cw", "chromaweight"), ("sg", "saturation"),
                     ("td", "tonedetail"))
+# raw control names that don't match a trim dict key directly
+_TRIM_RAW_KEY_ALIASES = {'midcontrastbias': 'mid_contrast',
+                         'highlightclipping': 'clip_trim'}
 # row budget per level: presence row + 2 rows per shown target, more targets
 # collapse into a "+N more" tail row
 TRIM_MAX_TARGETS = 4
@@ -131,66 +303,79 @@ TRIM_DETAIL_ROWS = TRIM_MAX_TARGETS * 2
 TRIM_ROWS_TOTAL = 1 + TRIM_DETAIL_ROWS + 1
 
 
-def trim_rows(level):
-    """Composed display rows for one level: (slot key, text) pairs."""
-    targets = read("Player.Process(video.dovi.%s.trims)" % level).split()
-    header = "targets: %s" % (" ".join(targets) or "-")
+def _trim_raw_value(trim, name):
+    val = trim.get(_TRIM_RAW_KEY_ALIASES.get(name, name))
+    return str(val) if val is not None else ""
+
+
+def _trim_ui_value(trim, name):
+    val = trim['ui'].get(name)
+    return "%.4f" % val if val is not None else ""
+
+
+def trim_rows(level, trims, l10_targets=None):
+    """Composed display rows for one level: (slot key, text) pairs. trims is
+    rpu['l2'] or rpu['l8']; l10_targets is rpu['l10'] (l8 only)."""
+    header = "targets: %s" % (" ".join(str(t['nits']) for t in trims) or "-")
     if level == "l8":
-        header += "  l10: %s" % (read(
-            "Player.Process(video.dovi.l10.targets)") or "-")
+        l10_str = " ".join("%d (%s)" % (t['nits'], t['primary_name'])
+                           for t in (l10_targets or []))
+        header += "  l10: %s" % (l10_str or "-")
     rows = [("%s.trims" % level, header)]
-    shown = targets[:TRIM_MAX_TARGETS]
+    shown = trims[:TRIM_MAX_TARGETS]
     controls = TRIM_RAW_CONTROLS_L8 if level == "l8" else TRIM_RAW_CONTROLS
-    for target in shown:
-        raw = ["%s%s" % (key, read(
-            "Player.Process(video.dovi.%s.trim.%s.%s)" % (level, target, name))
-            or "-") for key, name in controls]
-        ui = ["%s%s" % (key, read(
-            "Player.Process(video.dovi.%s.trim.%s.%s.ui)" % (level, target, name))
-            or "-") for key, name in TRIM_UI_CONTROLS]
-        rows.append(("%s.%s.raw" % (level, target),
-                     "%s  %s" % (target, " ".join(raw))))
-        rows.append(("%s.%s.ui" % (level, target), "     ui  %s" % " ".join(ui)))
-    if len(targets) > len(shown):
+    for trim in shown:
+        raw = ["%s%s" % (key, _trim_raw_value(trim, name) or "-")
+              for key, name in controls]
+        ui = ["%s%s" % (key, _trim_ui_value(trim, name) or "-")
+             for key, name in TRIM_UI_CONTROLS]
+        rows.append(("%s.%d.raw" % (level, trim['nits']),
+                     "%d  %s" % (trim['nits'], " ".join(raw))))
+        rows.append(("%s.%d.ui" % (level, trim['nits']),
+                     "     ui  %s" % " ".join(ui)))
+    if len(trims) > len(shown):
         rows.append(("%s.more" % level, "+%d more targets"
-                     % (len(targets) - len(shown))))
+                     % (len(trims) - len(shown))))
     return rows
 
 # ------------------------------------------------------------- hdr10+ block
-# Single block, not per-level like trim; blank entirely when
-# video.hdr10plus.profile is empty (no HDR10+ metadata on this content or
-# build). Values join onto compact rows the same way trim_rows() composes
-# targets, to keep the many percentile fields inside a small row budget.
+# Single block, not per-level like trim; blank entirely when parsed['hdr10plus']
+# is None (no HDR10+ metadata on this content or frame). Values join onto
+# compact rows the same way trim_rows() composes targets, to keep the many
+# percentile fields inside a small row budget.
 HDR10PLUS_TITLE = "HDR10+ (per-frame)"
 HDR10PLUS_PERCENTILES = (1, 5, 10, 25, 50, 75, 90, 95, 99)
 HDR10PLUS_ROWS_TOTAL = 3
 
 
-def hdr10plus_rows():
-    """Composed display rows for the HDR10+ block: (slot key, text) pairs."""
-    profile = read("Player.Process(video.hdr10plus.profile)")
-    if not profile:
+def hdr10plus_rows(hdr10plus):
+    """Composed display rows for the HDR10+ block: (slot key, text) pairs.
+    hdr10plus is parsed['hdr10plus']."""
+    if not hdr10plus:
         return []
+    maxscl = hdr10plus['maxscl']
     rows = [("hdr10plus.id",
              "profile %s  app %s  win %s  tgt.nits %s  maxscl %s  r %s  g %s  b %s" % (
-        profile,
-        read("Player.Process(video.hdr10plus.application)") or "-",
-        read("Player.Process(video.hdr10plus.windows)") or "-",
-        read("Player.Process(video.hdr10plus.target.max.nits)") or "-",
-        read("Player.Process(video.hdr10plus.maxscl)") or "-",
-        read("Player.Process(video.hdr10plus.maxscl.r)") or "-",
-        read("Player.Process(video.hdr10plus.maxscl.g)") or "-",
-        read("Player.Process(video.hdr10plus.maxscl.b)") or "-"))]
+        hdr10plus['profile'],
+        hdr10plus['application_version'],
+        hdr10plus['num_windows'],
+        hdr10plus['targeted_system_display_maximum_luminance'],
+        fmt_number(max(maxscl)),
+        fmt_number(maxscl[0]),
+        fmt_number(maxscl[1]),
+        fmt_number(maxscl[2])))]
+    is_profile_b = hdr10plus['profile'] == 'B'
+    knee_x = "%.3f" % hdr10plus['knee_point_x'] if is_profile_b else "-"
+    knee_y = "%.3f" % hdr10plus['knee_point_y'] if is_profile_b else "-"
+    anchors = str(len(hdr10plus['bezier_anchors'])) if is_profile_b else "-"
     rows.append(("hdr10plus.tone",
                  "avg.maxrgb %s  frac.bright %s  knee.x %s  knee.y %s  bezier.anchors %s" % (
-        read("Player.Process(video.hdr10plus.average.maxrgb)") or "-",
-        read("Player.Process(video.hdr10plus.fraction.bright)") or "-",
-        read("Player.Process(video.hdr10plus.knee.x)") or "-",
-        read("Player.Process(video.hdr10plus.knee.y)") or "-",
-        read("Player.Process(video.hdr10plus.bezier.anchors)") or "-")))
-    dist = ["%d:%s" % (p, read(
-        "Player.Process(video.hdr10plus.distribution.%d)" % p) or "-")
-        for p in HDR10PLUS_PERCENTILES]
+        fmt_number(hdr10plus['average_maxrgb']),
+        "%.1f" % hdr10plus['fraction_bright_pixels'],
+        knee_x, knee_y, anchors)))
+    dist_by_pct = {d['percentage']: d['nits'] for d in hdr10plus['distribution']}
+    dist = ["%d:%s" % (p, fmt_number(dist_by_pct[p]) if p in dist_by_pct else "-")
+           for p in HDR10PLUS_PERCENTILES]
     rows.append(("hdr10plus.dist", "dist  %s" % " ".join(dist)))
     return rows
 
@@ -256,6 +441,17 @@ def player_state():
     return "idle"
 
 
+def module_version():
+    if SIDEDATA_IMPORT_ERROR is not None:
+        log_error("sidedata module unavailable: %s" % SIDEDATA_IMPORT_ERROR)
+        return "missing"
+    try:
+        return xbmcaddon.Addon(SIDEDATA_MODULE_ID).getAddonInfo("version")
+    except Exception as exc:
+        log_error("module_version() failed: %s" % exc)
+        return "?"
+
+
 class DoViLabelOverlay(xbmcgui.WindowDialog):
     """Borderless overlay; renders above fullscreen video without pausing it."""
 
@@ -267,6 +463,9 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
         self.previous = {}
         self.changed_at = {}
         self.rows = []  # flat, section-major: section 0's rows, then section 1's
+        self.module_version = module_version()
+        self._last_raw = None  # forces a parse on the first refresh
+        self._last_parsed = None
         self._build()
 
     def _build(self):
@@ -383,25 +582,40 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
                             % (self.tick, player_state()))
 
         now = time.monotonic()
+        raw = read("Player.Process(video.sidedata)")
+        if raw != self._last_raw:
+            self._last_parsed = parse_sidedata(raw)
+            self._last_raw = raw
+        parsed = self._last_parsed
+        computed = compute_row_values(parsed, self.module_version)
+
         for name_ctl, value_ctl, spec in self.rows:
             if spec is None:
                 name_ctl.setLabel("")
                 value_ctl.setLabel("")
                 continue
 
-            expression, shown_name = spec
-            value = read(expression)
+            row_key, shown_name = spec
+            if row_key.startswith("VideoPlayer."):
+                value = read(row_key)
+            else:
+                value = computed.get(row_key, "")
             shown = value if value != "" else "-"
-            if self.previous.get(expression, value) != value:
-                self.changed_at[expression] = now
-            if now - self.changed_at.get(expression, -HIGHLIGHT_SECS) < HIGHLIGHT_SECS:
+            if self.previous.get(row_key, value) != value:
+                self.changed_at[row_key] = now
+            if now - self.changed_at.get(row_key, -HIGHLIGHT_SECS) < HIGHLIGHT_SECS:
                 shown = "[COLOR FF60FF60]%s[/COLOR]" % shown
-            self.previous[expression] = value
+            self.previous[row_key] = value
             name_ctl.setLabel(shown_name)
             value_ctl.setLabel(shown)
 
+        rpu = parsed.get('rpu')
+        l2_trims = rpu['l2'] if rpu else []
+        l8_trims = rpu['l8'] if rpu else []
+        l10_targets = rpu['l10'] if rpu else []
         for (_, level), column in zip(TRIM_SECTIONS, self.trim_labels):
-            composed = trim_rows(level)
+            trims = l8_trims if level == "l8" else l2_trims
+            composed = trim_rows(level, trims, l10_targets if level == "l8" else None)
             for slot, label in enumerate(column):
                 if slot >= len(composed):
                     label.setLabel("")
@@ -415,7 +629,7 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
                 self.previous[key] = text
                 label.setLabel(shown)
 
-        composed = hdr10plus_rows()
+        composed = hdr10plus_rows(parsed.get('hdr10plus'))
         self.hdr10plus_title.setLabel(HDR10PLUS_TITLE if composed else "")
         for slot, label in enumerate(self.hdr10plus_labels):
             if slot >= len(composed):

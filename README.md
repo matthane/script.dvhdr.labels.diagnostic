@@ -12,6 +12,6 @@ Run the add-on from the add-ons list, or bind a key to `RunScript(script.dvhdr.l
 
 ## Labels
 
-The overlay polls the `Player.Process(video.dovi.*)` and `Player.Process(video.hdr.*)` labels from the CoreELEC label registry branch, plus the stock `VideoPlayer.HdrType` and `VideoPlayer.HdrDetail`. On builds without those labels the rows will just show empty values.
+The overlay polls `Player.Process(video.sidedata)`, the raw base64 DV/HDR payload JSON, and parses it each time it changes with `script.module.sidedata`, plus the stock `VideoPlayer.HdrType` and `VideoPlayer.HdrDetail`. On builds or content without a given section the rows will just show empty values.
 
 License GPL-2.0-or-later.
