@@ -17,6 +17,18 @@ to fit; density beats aesthetics in a diagnostic overlay.
 video.bitdepth rows, rebalances the two sections, and tightens line height
 and panel contrast so the wider table still fits 1280x720.
 
+2.4.0 adds an HDR10+ block below the trim block: profile/application/window
+and maxscl/tone-map fields plus the nine distribution percentiles, composed
+into three dense rows the same way trim_rows() composes targets. The block
+is blank when video.hdr10plus.profile is empty. Every label drops to font10
+(the smallest named skin font) so glyphs fit the row pitch, and line height
+retightens to /44 -- as loose as the row count allows while still clearing
+font10 and fitting 1280x720 and 1920x1080.
+
+2.4.0 also folds video.dovi.l10.targets onto the L8 trims header row (no
+spare row budget), since it lists L10 display definitions rather than
+trim targets.
+
 Read-only test tooling: no network, no settings, no filesystem writes.
 """
 
@@ -29,7 +41,7 @@ import xbmc
 import xbmcgui
 
 ADDON_ID = "script.dvhdr.labels.diagnostic"
-ADDON_VERSION = "2.3.0"  # keep in sync with addon.xml
+ADDON_VERSION = "2.4.0"  # keep in sync with addon.xml
 LOG_PREFIX = "[script.dvhdr.labels.diagnostic] "
 
 # running flag on the home window: every ExecuteAddon spawns a fresh Python
@@ -122,7 +134,11 @@ TRIM_ROWS_TOTAL = 1 + TRIM_DETAIL_ROWS + 1
 def trim_rows(level):
     """Composed display rows for one level: (slot key, text) pairs."""
     targets = read("Player.Process(video.dovi.%s.trims)" % level).split()
-    rows = [("%s.trims" % level, "targets: %s" % (" ".join(targets) or "-"))]
+    header = "targets: %s" % (" ".join(targets) or "-")
+    if level == "l8":
+        header += "  l10: %s" % (read(
+            "Player.Process(video.dovi.l10.targets)") or "-")
+    rows = [("%s.trims" % level, header)]
     shown = targets[:TRIM_MAX_TARGETS]
     controls = TRIM_RAW_CONTROLS_L8 if level == "l8" else TRIM_RAW_CONTROLS
     for target in shown:
@@ -138,6 +154,44 @@ def trim_rows(level):
     if len(targets) > len(shown):
         rows.append(("%s.more" % level, "+%d more targets"
                      % (len(targets) - len(shown))))
+    return rows
+
+# ------------------------------------------------------------- hdr10+ block
+# Single block, not per-level like trim; blank entirely when
+# video.hdr10plus.profile is empty (no HDR10+ metadata on this content or
+# build). Values join onto compact rows the same way trim_rows() composes
+# targets, to keep the many percentile fields inside a small row budget.
+HDR10PLUS_TITLE = "HDR10+ (per-frame)"
+HDR10PLUS_PERCENTILES = (1, 5, 10, 25, 50, 75, 90, 95, 99)
+HDR10PLUS_ROWS_TOTAL = 3
+
+
+def hdr10plus_rows():
+    """Composed display rows for the HDR10+ block: (slot key, text) pairs."""
+    profile = read("Player.Process(video.hdr10plus.profile)")
+    if not profile:
+        return []
+    rows = [("hdr10plus.id",
+             "profile %s  app %s  win %s  tgt.nits %s  maxscl %s  r %s  g %s  b %s" % (
+        profile,
+        read("Player.Process(video.hdr10plus.application)") or "-",
+        read("Player.Process(video.hdr10plus.windows)") or "-",
+        read("Player.Process(video.hdr10plus.target.max.nits)") or "-",
+        read("Player.Process(video.hdr10plus.maxscl)") or "-",
+        read("Player.Process(video.hdr10plus.maxscl.r)") or "-",
+        read("Player.Process(video.hdr10plus.maxscl.g)") or "-",
+        read("Player.Process(video.hdr10plus.maxscl.b)") or "-"))]
+    rows.append(("hdr10plus.tone",
+                 "avg.maxrgb %s  frac.bright %s  knee.x %s  knee.y %s  bezier.anchors %s" % (
+        read("Player.Process(video.hdr10plus.average.maxrgb)") or "-",
+        read("Player.Process(video.hdr10plus.fraction.bright)") or "-",
+        read("Player.Process(video.hdr10plus.knee.x)") or "-",
+        read("Player.Process(video.hdr10plus.knee.y)") or "-",
+        read("Player.Process(video.hdr10plus.bezier.anchors)") or "-")))
+    dist = ["%d:%s" % (p, read(
+        "Player.Process(video.hdr10plus.distribution.%d)" % p) or "-")
+        for p in HDR10PLUS_PERCENTILES]
+    rows.append(("hdr10plus.dist", "dist  %s" % " ".join(dist)))
     return rows
 
 # action ids from xbmc/input/actions/ActionIDs.h
@@ -221,8 +275,11 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
         except Exception:
             width, height = 1280, 720  # pre-Estuary skin coordinate fallback
 
-        # condensed since 2.2.0: the trim block nearly doubles the row count
-        line_h = max(14, int(height / 42.0))
+        # condensed since 2.2.0/2.4.0: trim and hdr10plus blocks add rows.
+        # font10 (smallest named skin font, ~23px on Estuary) is the floor
+        # this line height must clear, so 44 is as tight as the row count
+        # allows without the glyphs overrunning their row again
+        line_h = max(14, int(height / 44.0))
         mx, my = int(width * 0.03), int(height * 0.04)
         pad = int(width * 0.015)
         gap = int(width * 0.02)
@@ -235,7 +292,8 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
         # user is trying to look at
         ph = (int(line_h * 0.35) + title_block + section_block
               + ROWS_PER_SECTION * line_h + int(line_h * 0.4) + section_block
-              + TRIM_ROWS_TOTAL * line_h + footer_block)
+              + TRIM_ROWS_TOTAL * line_h + int(line_h * 0.4) + section_block
+              + HDR10PLUS_ROWS_TOTAL * line_h + footer_block)
 
         col_w = (pw - 2 * pad - gap) // 2
         name_w = int(col_w * 0.62)
@@ -252,22 +310,22 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
             log("panel image unavailable: %s" % exc, xbmc.LOGWARNING)
 
         self.title = xbmcgui.ControlLabel(mx + pad, title_y, pw - 2 * pad,
-                                          line_h, "", font="font13",
+                                          line_h, "", font="font10",
                                           textColor="FFFFD060")
         controls.append(self.title)
 
         for index, (section_name, section_rows) in enumerate(SECTIONS):
             cx = mx + pad + index * (col_w + gap)
             controls.append(xbmcgui.ControlLabel(
-                cx, section_y, col_w, line_h, section_name, font="font12",
+                cx, section_y, col_w, line_h, section_name, font="font10",
                 textColor="FFFFD060"))
             for row in range(ROWS_PER_SECTION):
                 y = rows_y + row * line_h
                 name = xbmcgui.ControlLabel(cx, y, name_w, line_h, "",
-                                            font="font12",
+                                            font="font10",
                                             textColor="FFE0E8F0")
                 value = xbmcgui.ControlLabel(cx + name_w, y, val_w, line_h, "",
-                                             font="font13",
+                                             font="font10",
                                              textColor="FFFFFFFF")
                 # rows past the end of a short section stay blank
                 self.rows.append((name, value,
@@ -282,22 +340,38 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
         for index, (trim_title, _) in enumerate(TRIM_SECTIONS):
             cx = mx + pad + index * (col_w + gap)
             controls.append(xbmcgui.ControlLabel(
-                cx, trim_y, col_w, line_h, trim_title, font="font12",
+                cx, trim_y, col_w, line_h, trim_title, font="font10",
                 textColor="FFFFD060"))
             column = []
             for row in range(TRIM_ROWS_TOTAL):
                 y = trim_y + section_block + row * line_h
                 label = xbmcgui.ControlLabel(cx, y, col_w, line_h, "",
-                                             font="font12",
+                                             font="font10",
                                              textColor="FFFFFFFF")
                 column.append(label)
                 controls.append(label)
             self.trim_labels.append(column)
 
+        # HDR10+ block: single full-width column of composed rows, filled
+        # dynamically each refresh; title and rows stay blank together when
+        # the block has nothing to show
+        hdr10plus_y = trim_y + section_block + TRIM_ROWS_TOTAL * line_h + int(line_h * 0.4)
+        self.hdr10plus_title = xbmcgui.ControlLabel(
+            mx + pad, hdr10plus_y, pw - 2 * pad, line_h, "", font="font10",
+            textColor="FFFFD060")
+        controls.append(self.hdr10plus_title)
+        self.hdr10plus_labels = []
+        for row in range(HDR10PLUS_ROWS_TOTAL):
+            y = hdr10plus_y + section_block + row * line_h
+            label = xbmcgui.ControlLabel(mx + pad, y, pw - 2 * pad, line_h, "",
+                                         font="font10", textColor="FFFFFFFF")
+            self.hdr10plus_labels.append(label)
+            controls.append(label)
+
         self.footer = xbmcgui.ControlLabel(
             mx + pad, my + ph - int(line_h * 1.3), pw - 2 * pad, line_h,
             "Back or re-run add-on: close   |   all other keys act on the video",
-            font="font12", textColor="FF8090A0")
+            font="font10", textColor="FF8090A0")
         controls.append(self.footer)
 
         self.addControls(controls)
@@ -340,6 +414,21 @@ class DoViLabelOverlay(xbmcgui.WindowDialog):
                     shown = "[COLOR FF60FF60]%s[/COLOR]" % shown
                 self.previous[key] = text
                 label.setLabel(shown)
+
+        composed = hdr10plus_rows()
+        self.hdr10plus_title.setLabel(HDR10PLUS_TITLE if composed else "")
+        for slot, label in enumerate(self.hdr10plus_labels):
+            if slot >= len(composed):
+                label.setLabel("")
+                continue
+            key, text = composed[slot]
+            shown = text
+            if self.previous.get(key, text) != text:
+                self.changed_at[key] = now
+            if now - self.changed_at.get(key, -HIGHLIGHT_SECS) < HIGHLIGHT_SECS:
+                shown = "[COLOR FF60FF60]%s[/COLOR]" % shown
+            self.previous[key] = text
+            label.setLabel(shown)
 
     # ----------------------------------------------------------------- input
     def onAction(self, action):
