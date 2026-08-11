@@ -6,50 +6,12 @@ Player.Process(video.sidedata), parsed by script.module.sidedata.
 
 Result shape and field semantics are documented in that module's README and
 lib/sidedata/__init__.py; absence is signalled by emptiness (shown here as
-"-"), which also covers a build without the feature.
-
-2.2.0 adds the trim block: targets enumerated live from the l2.trims /
-l8.trims presence labels, then every control queried per target through the
-parameterized trim labels (raw codes plus the .ui row). Spacing is condensed
-to fit; density beats aesthetics in a diagnostic overlay.
-
-2.3.0 adds level/version/rpu.present/bl.present/el.present/vdr.bitdepth and
-video.bitdepth rows, rebalances the two sections, and tightens line height
-and panel contrast so the wider table still fits 1280x720.
-
-2.4.0 adds an HDR10+ block below the trim block: profile/application/window
-and maxscl/tone-map fields plus the nine distribution percentiles, composed
-into three dense rows the same way trim_rows() composes targets. The block
-is blank when video.hdr10plus.profile is empty. Every label drops to font10
-(the smallest named skin font) so glyphs fit the row pitch, and line height
-retightens to /44 -- as loose as the row count allows while still clearing
-font10 and fitting 1280x720 and 1920x1080.
-
-2.4.0 also folds video.dovi.l10.targets onto the L8 trims header row (no
-spare row budget), since it lists L10 display definitions rather than
-trim targets.
-
-3.0.0 reworks the label source: Kodi core dropped the ~60 parsed
-video.dovi.*/video.hdr.*/video.hdr10plus.* infolabels and now exposes only
-Player.Process(video.sidedata), a JSON object of base64 raw payloads.
-script.module.sidedata parses it; row values come from that parsed result
-via compute_row_values()/trim_rows()/hdr10plus_rows(), pure functions that
-take the parsed dict and never touch xbmc, so they're host-testable.
+"-"), which also covers a build without the feature. Row values come from
+the parsed result via compute_row_values()/trim_rows()/hdr10plus_rows(),
+pure functions that never touch xbmc, so they're host-testable;
 parse_sidedata() only re-runs when the raw sidedata string changes between
-polls. video.bitdepth is dropped (no longer available); the old
-video.dovi.apiversion row is now a module row showing the sidedata module's
-own addon version -- "missing" if the module import failed, in which case
-every parsed row falls back to "-" instead of taking the script down.
-VideoPlayer.HdrType and VideoPlayer.HdrDetail are still read directly, as
-before. Screen layout is unchanged from 2.4.0.
-
-3.0.1 fixes dovi.profile: it read the RPU's guessed_profile even when a
-config record was present, which is wrong on carriage where the RPU shape
-doesn't match the signalled profile (profile 10 streams carry a profile
-8-shaped RPU, so 3.0.0 showed "8.<compat>" instead of "10.<compat>" on
-those). The config record is container-level truth for profile, same as
-level/version/rpu.present/bl.present/el.present already were; the RPU
-guess is now only a fallback for when no config record is present at all.
+polls. If the module import fails, the module row shows "missing" and every
+parsed row falls back to "-" instead of taking the script down.
 
 Read-only test tooling: no network, no settings, no filesystem writes.
 """
