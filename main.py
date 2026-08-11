@@ -43,6 +43,14 @@ every parsed row falls back to "-" instead of taking the script down.
 VideoPlayer.HdrType and VideoPlayer.HdrDetail are still read directly, as
 before. Screen layout is unchanged from 2.4.0.
 
+3.0.1 fixes dovi.profile: it read the RPU's guessed_profile even when a
+config record was present, which is wrong on carriage where the RPU shape
+doesn't match the signalled profile (profile 10 streams carry a profile
+8-shaped RPU, so 3.0.0 showed "8.<compat>" instead of "10.<compat>" on
+those). The config record is container-level truth for profile, same as
+level/version/rpu.present/bl.present/el.present already were; the RPU
+guess is now only a fallback for when no config record is present at all.
+
 Read-only test tooling: no network, no settings, no filesystem writes.
 """
 
@@ -73,7 +81,7 @@ def parse_sidedata(json_str):
 
 
 ADDON_ID = "script.dvhdr.labels.diagnostic"
-ADDON_VERSION = "3.0.0"  # keep in sync with addon.xml
+ADDON_VERSION = "3.0.1"  # keep in sync with addon.xml
 SIDEDATA_MODULE_ID = "script.module.sidedata"
 LOG_PREFIX = "[script.dvhdr.labels.diagnostic] "
 
@@ -174,13 +182,18 @@ def compute_row_values(parsed, module_version):
 
     header = rpu['header'] if rpu else None
 
+    # profile is container-level truth (the dvcC/dvvC config record), not
+    # the RPU's guessed_profile: a profile 10 stream carries a profile
+    # 8-shaped RPU, so the RPU alone can't tell profile 10 from 8. Only
+    # fall back to the RPU guess, plain with no compat digit, when there's
+    # no config record at all to read the carriage-level profile from.
     profile = rpu['profile'] if rpu else None
-    if profile is None:
-        values['dovi.profile'] = ""
-    elif config and config.get('compat_id') is not None:
-        values['dovi.profile'] = "%d.%d" % (profile, config['compat_id'])
-    else:
+    if config:
+        values['dovi.profile'] = "%d.%d" % (config['profile'], config['compat_id'])
+    elif profile is not None:
         values['dovi.profile'] = str(profile)
+    else:
+        values['dovi.profile'] = ""
     values['dovi.el.type'] = header['el_type'] if header and header['el_type'] else ""
 
     if config:
