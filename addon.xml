@@ -1,8 +1,8 @@
 <?xml version="1.0" encoding="UTF-8" standalone="yes"?>
-<addon id="script.dvhdr.labels.diagnostic" name="DV/HDR Labels (Diagnostic)" version="3.0.2" provider-name="matthane">
+<addon id="script.dvhdr.labels.diagnostic" name="DV/HDR Labels (Diagnostic)" version="3.0.3" provider-name="matthane">
   <requires>
     <import addon="xbmc.python" version="3.0.0"/>
-    <import addon="script.module.sidedata" version="1.0.0"/>
+    <import addon="script.module.sidedata" version="1.2.2"/>
   </requires>
   <extension point="xbmc.python.script" library="main.py">
     <provides>executable</provides>

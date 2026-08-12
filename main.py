@@ -32,7 +32,7 @@ except Exception as exc:  # never let a missing/broken module install kill the s
     _parse_sidedata = None
     SIDEDATA_IMPORT_ERROR = exc
 
-_EMPTY_SIDEDATA = {'flags': [], 'config': None, 'rpu': None,
+_EMPTY_SIDEDATA = {'flags': [], 'structure': None, 'config': None, 'rpu': None,
                    'hdr10plus': None, 'mdcv': None, 'cll': None}
 
 
@@ -43,7 +43,7 @@ def parse_sidedata(json_str):
 
 
 ADDON_ID = "script.dvhdr.labels.diagnostic"
-ADDON_VERSION = "3.0.1"  # keep in sync with addon.xml
+ADDON_VERSION = "3.0.3"  # keep in sync with addon.xml
 SIDEDATA_MODULE_ID = "script.module.sidedata"
 LOG_PREFIX = "[script.dvhdr.labels.diagnostic] "
 
@@ -78,6 +78,7 @@ SECTIONS = (
         ("dovi.el.present", "dovi.el.present"),
         ("dovi.meta.version", "dovi.meta.version"),
         ("flags", "flags"),
+        ("structure", "structure"),
         ("dovi.vdr.bitdepth", "dovi.vdr.bitdepth"),
         ("dovi.l1.min.pq", "dovi.l1.min.pq"),
         ("dovi.l1.min.nits", "dovi.l1.min.nits"),
@@ -173,6 +174,7 @@ def compute_row_values(parsed, module_version):
 
     values['dovi.meta.version'] = rpu['cm_version'] if rpu and rpu['cm_version'] else ""
     values['flags'] = " ".join(parsed.get('flags') or [])
+    values['structure'] = parsed.get('structure') or ""
 
     vdr_bit_depth = header['vdr_bit_depth'] if header else None
     values['dovi.vdr.bitdepth'] = str(vdr_bit_depth) if vdr_bit_depth is not None else ""
