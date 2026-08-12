@@ -77,7 +77,7 @@ SECTIONS = (
         ("dovi.bl.present", "dovi.bl.present"),
         ("dovi.el.present", "dovi.el.present"),
         ("dovi.meta.version", "dovi.meta.version"),
-        ("dovi.flags", "dovi.flags"),
+        ("flags", "flags"),
         ("dovi.vdr.bitdepth", "dovi.vdr.bitdepth"),
         ("dovi.l1.min.pq", "dovi.l1.min.pq"),
         ("dovi.l1.min.nits", "dovi.l1.min.nits"),
@@ -172,7 +172,7 @@ def compute_row_values(parsed, module_version):
         values['dovi.el.present'] = ""
 
     values['dovi.meta.version'] = rpu['cm_version'] if rpu and rpu['cm_version'] else ""
-    values['dovi.flags'] = " ".join(parsed.get('flags') or [])
+    values['flags'] = " ".join(parsed.get('flags') or [])
 
     vdr_bit_depth = header['vdr_bit_depth'] if header else None
     values['dovi.vdr.bitdepth'] = str(vdr_bit_depth) if vdr_bit_depth is not None else ""
