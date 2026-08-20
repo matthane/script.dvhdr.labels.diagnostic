@@ -273,10 +273,14 @@ TRIM_UI_CONTROLS = (("g", "gain"), ("l", "lift"), ("gm", "gamma"),
 # raw control names that don't match a trim dict key directly
 _TRIM_RAW_KEY_ALIASES = {'midcontrastbias': 'mid_contrast',
                          'highlightclipping': 'clip_trim'}
-# row budget per level: presence row + 2 rows per shown target, more targets
-# collapse into a "+N more" tail row
+# saturation/hue vectors are 6-value lists (unlike the raw scalar controls
+# above), so l8 gets a third composed row rather than joining them inline
+TRIM_L8_VECTOR_FIELDS = (("sv", "saturation_vector"), ("hv", "hue_vector"))
+# row budget per level: presence row + up to 3 rows per shown target (raw,
+# ui, and an l8-only vec row shown when saturation/hue vectors are present),
+# more targets collapse into a "+N more" tail row
 TRIM_MAX_TARGETS = 4
-TRIM_DETAIL_ROWS = TRIM_MAX_TARGETS * 2
+TRIM_DETAIL_ROWS = TRIM_MAX_TARGETS * 3
 TRIM_ROWS_TOTAL = 1 + TRIM_DETAIL_ROWS + 1
 
 
@@ -288,6 +292,11 @@ def _trim_raw_value(trim, name):
 def _trim_ui_value(trim, name):
     val = trim['ui'].get(name)
     return "%.4f" % val if val is not None else ""
+
+
+def _trim_vector_value(trim, name):
+    vec = trim.get(name)
+    return " ".join(str(v) for v in vec) if vec else ""
 
 
 def trim_rows(level, trims, l10_targets=None):
@@ -310,6 +319,11 @@ def trim_rows(level, trims, l10_targets=None):
                      "%d  %s" % (trim['nits'], " ".join(raw))))
         rows.append(("%s.%d.ui" % (level, trim['nits']),
                      "     ui  %s" % " ".join(ui)))
+        if level == "l8" and any(trim.get(name) for _, name in TRIM_L8_VECTOR_FIELDS):
+            vec = ["%s %s" % (key, _trim_vector_value(trim, name) or "-")
+                  for key, name in TRIM_L8_VECTOR_FIELDS]
+            rows.append(("%s.%d.vec" % (level, trim['nits']),
+                         "    vec  %s" % "  ".join(vec)))
     if len(trims) > len(shown):
         rows.append(("%s.more" % level, "+%d more targets"
                      % (len(trims) - len(shown))))
